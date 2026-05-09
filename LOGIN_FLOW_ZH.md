@@ -1,169 +1,160 @@
-# Telegram Android 登录与验证码流程分析
+# Telegram Android 登录与验证码流程分析（含可点击源码定位）
 
-本文基于 `TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java`、`LaunchActivity.java`、`AndroidUtilities.java`、`SmsReceiver.java` 与 `AndroidManifest.xml` 的当前实现。
+> 说明：下面的链接都使用“仓库相对路径 + 行号锚点”，在 GitHub 页面可直接点击跳转到对应代码。
+
+## 0. 关键方法索引（文件 + 行号 + 可点击）
+
+| 场景 | 方法/逻辑 | 文件 | 行号 | 链接 |
+|---|---|---|---|---|
+| 未登录入口 | `getClientNotActivatedFragment()` | `LaunchActivity.java` | 1055-1060 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java#L1055-L1060) |
+| 发登录码 | `TL_auth_sendCode` 请求组装与发送 | `LoginActivity.java` | 3152-3157, 3177-3193 | [跳转1](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3152-L3157) / [跳转2](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3177-L3193) |
+| 验证码类型路由 | `fillNextCodeParams(Bundle, auth_SentCode, boolean)` | `LoginActivity.java` | 1753-1947 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L1753-L1947) |
+| 验证码页初始化 | `LoginActivitySmsView.setParams(...)` | `LoginActivity.java` | 4293-4538 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4293-L4538) |
+| 开启短信监听 | `AndroidUtilities.setWaitingForSms(boolean)` | `AndroidUtilities.java` | 2442-2459 | [跳转](./TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java#L2442-L2459) |
+| 短信广播接收 | `SmsReceiver.onReceive(...)` | `SmsReceiver.java` | 27-55 | [跳转](./TMessagesProj/src/main/java/org/telegram/messenger/SmsReceiver.java#L27-L55) |
+| 短信广播注册 | `SmsReceiver` receiver 声明 | `AndroidManifest.xml` | 430-436 | [跳转](./TMessagesProj/src/main/AndroidManifest.xml#L430-L436) |
+| 自动填码并提交 | `didReceivedNotification(...)` | `LoginActivity.java` | 5140-5157 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L5140-L5157) |
+| 验码请求 | `LoginActivitySmsView.onNextPressed(...)` 中 `TL_auth_signIn` | `LoginActivity.java` | 4682-4990（重点 4867-4872） | [跳转1](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4682-L4990) / [跳转2](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4867-L4872) |
+| 倒计时重发 | `timeText` 点击 -> `TL_auth_resendCode` | `LoginActivity.java` | 3800-3839 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3800-L3839) |
+| 主动重发 | `resendCode()` | `LoginActivity.java` | 4155-4206 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4155-L4206) |
+| 取消验证码会话 | `TL_auth_cancelCode` | `LoginActivity.java` | 5072-5077 | [跳转](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L5072-L5077) |
+
+---
 
 ## 1. 登录入口
 
-- 启动后，如果当前账号未激活，会走未登录流程。
-- `LaunchActivity#getClientNotActivatedFragment()`：
-  - 如果登录状态有中间页状态，返回 `new LoginActivity()`；
-  - 否则返回 `IntroActivity`。
-- 关键位置：
-  - `LaunchActivity.java:1055-1060`
+- 启动后，如果账号未激活，会走未登录流程。
+- 入口方法：`LaunchActivity#getClientNotActivatedFragment()`：
+  - 有登录中间态：`new LoginActivity()`
+  - 无中间态：`IntroActivity`
+- 对应代码：
+  - [LaunchActivity.java#L1055-L1060](./TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java#L1055-L1060)
 
-## 2. 手机号提交与发码（auth.sendCode）
+## 2. 手机号提交与发码（`auth.sendCode`）
 
-在 `LoginActivity.PhoneView` 中点击下一步后：
+在 `LoginActivity.PhoneView` 点击下一步后：
 
-1. 组装 `TL_codeSettings`（是否允许 app hash、flash call、logout tokens 等）。
-2. 处理短信 hash：
-   - 清空 `sms_hash_code`；
-   - 若后端允许 `allow_app_hash`，写入 `sms_hash = BuildVars.getSmsHash()`。
-3. 登录场景发送 `TL_auth_sendCode`：
-   - 参数包含 `api_id/api_hash/phone_number/settings`。
-4. 成功后进入 `fillNextCodeParams(...)`，根据后端返回码类型跳到对应验证码页面。
+1. 组装 `TL_codeSettings`；
+2. 处理短信 hash 缓存（`sms_hash` / `sms_hash_code`）；
+3. 发起 `TL_auth_sendCode`；
+4. 成功后进入 `fillNextCodeParams(...)` 按类型路由验证码页。
 
-关键位置：
-- `LoginActivity.java:3116-3122`（sms_hash 存储）
-- `LoginActivity.java:3152-3157`（`TL_auth_sendCode`）
-- `LoginActivity.java:3192`（进入 `fillNextCodeParams`）
+对应代码：
+- sms hash 写入：
+  - [LoginActivity.java#L3116-L3122](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3116-L3122)
+- `TL_auth_sendCode`：
+  - [LoginActivity.java#L3152-L3157](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3152-L3157)
+- 请求成功后路由：
+  - [LoginActivity.java#L3177-L3193](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3177-L3193)
 
-## 3. 验证码页路由（按后端返回类型）
+## 3. 验证码页面路由（按后端 `type/next_type`）
 
-`fillNextCodeParams(Bundle, auth_SentCode, ...)` 会解析两类信息：
+核心方法：`fillNextCodeParams(Bundle params, TLRPC.auth_SentCode res, boolean animate)`
 
-1. `res.type`：当前应该使用哪种验证码方式（App 内码/SMS/来电/Fragment SMS/词语验证码等）；
-2. `res.next_type`：当前失败或超时后可切换到的下一种方式。
+它会：
+- 提取 `phone_code_hash`、`timeout`、`length`、`pattern`、`prefix`、`url`；
+- 根据 `res.type` 与 `res.next_type` 选择 `VIEW_CODE_SMS / CALL / FLASH_CALL / MESSAGE / FRAGMENT_SMS / WORD / PHRASE` 等页面。
 
-它会设置 `phoneHash`（即 `phone_code_hash`）以及 `timeout/length/pattern/prefix/url` 等参数，并通过 `setPage(...)` 跳转到不同视图：
-- `VIEW_CODE_MESSAGE`（应用内码）
-- `VIEW_CODE_SMS`（短信码，含 Firebase SMS）
-- `VIEW_CODE_CALL` / `VIEW_CODE_FLASH_CALL` / `VIEW_CODE_MISSED_CALL`
-- `VIEW_CODE_FRAGMENT_SMS`
-- `VIEW_CODE_WORD` / `VIEW_CODE_PHRASE`
-- 以及邮箱、付费等分支
-
-关键位置：
-- `LoginActivity.java:1753-1947`
+对应代码：
+- [LoginActivity.java#L1753-L1947](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L1753-L1947)
 
 ## 4. 验证码输入页初始化
 
-进入 `LoginActivitySmsView.setParams(...)` 后：
+核心方法：`LoginActivitySmsView.setParams(Bundle params, boolean restore)`
 
-- 会加载手机号、`phoneHash`、`nextType`、超时时间、码长等；
-- 针对 SMS 场景：
-  - `AndroidUtilities.setWaitingForSms(true)`
-  - 注册 `NotificationCenter.didReceiveSmsCode` 监听
-- 针对来电场景则监听 `didReceiveCall`。
+主要动作：
+- 加载手机号、`phoneHash`、`nextType`、超时、码长；
+- SMS 场景：`setWaitingForSms(true)` + 监听 `didReceiveSmsCode`；
+- 来电场景：监听 `didReceiveCall`。
 
-关键位置：
-- `LoginActivity.java:4314-4335`（等待事件与参数初始化）
+对应代码：
+- [LoginActivity.java#L4293-L4538](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4293-L4538)
+- 其中 SMS 监听注册点：
+  - [LoginActivity.java#L4316-L4319](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4316-L4319)
 
 ## 5. 短信验证码自动读取流程（重点）
 
 ### 5.1 开启 SMS Retriever
 
-- 在 SMS 验证页初始化时调用 `AndroidUtilities.setWaitingForSms(true)`。
-- 内部通过 Google Play Services 的 `SmsRetrieverClient.startSmsRetriever()` 开始监听。
+- 方法：`AndroidUtilities.setWaitingForSms(true)`
+- 内部调用：`SmsRetriever.getClient(...).startSmsRetriever()`
 
-关键位置：
-- `AndroidUtilities.java:2442-2449`
+对应代码：
+- [AndroidUtilities.java#L2442-L2459](./TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java#L2442-L2459)
 
-### 5.2 广播接收器接收短信
+### 5.2 短信广播接收与解析
 
-- `AndroidManifest.xml` 注册了：
-  - `<receiver android:name=".SmsReceiver">`
-  - 监听 action：`com.google.android.gms.auth.api.phone.SMS_RETRIEVED`
-- `SmsReceiver.onReceive(...)` 在满足 `isWaitingForSms()` 时：
-  - 取到短信文本；
-  - 使用正则提取数字/短横线并去掉短横线；
-  - 码长 >= 3 才认定有效；
-  - 若本地有 `sms_hash`，会把 `hash|code` 写到 `sms_hash_code`；
-  - 最后发送 `NotificationCenter.didReceiveSmsCode`。
+- Manifest 注册广播：`SmsReceiver`
+  - [AndroidManifest.xml#L430-L436](./TMessagesProj/src/main/AndroidManifest.xml#L430-L436)
+- 接收与提取验证码：`SmsReceiver.onReceive(...)`
+  - [SmsReceiver.java#L27-L55](./TMessagesProj/src/main/java/org/telegram/messenger/SmsReceiver.java#L27-L55)
 
-关键位置：
-- `AndroidManifest.xml:430-436`
-- `SmsReceiver.java:35-54`
+### 5.3 自动填码并自动提交
 
-### 5.3 登录页收到验证码并自动提交
+- 方法：`LoginActivitySmsView.didReceivedNotification(...)`
+- 收到 `didReceiveSmsCode` 后立即：
+  1. `codeFieldContainer.setText(...)`
+  2. `onNextPressed(null)`
 
-- `LoginActivitySmsView.didReceivedNotification(...)` 收到 `didReceiveSmsCode` 后：
-  - 填入验证码输入框；
-  - 直接调用 `onNextPressed(null)` 发起校验请求。
+对应代码：
+- [LoginActivity.java#L5140-L5157](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L5140-L5157)
 
-关键位置：
-- `LoginActivity.java:5144-5147`
+### 5.4 hash 缓存复用
 
-### 5.4 本地 hash 缓存码复用
+- 在 SMS 页初始化时读取 `sms_hash_code`，命中后直接填码+提交。
 
-SMS 页面初始化时还会读 `sms_hash_code`：
-- 若与当前 `sms_hash` 匹配（且不是新账号流程），会直接填码并触发 `onNextPressed(null)`。
+对应代码：
+- [LoginActivity.java#L4490-L4504](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4490-L4504)
 
-关键位置：
-- `LoginActivity.java:4490-4504`
+## 6. 验证码校验（`auth.signIn`）
 
-## 6. 验证码校验（auth.signIn）
+核心方法：`LoginActivitySmsView.onNextPressed(String code)`
 
-用户手动输入或自动填充后，`LoginActivitySmsView.onNextPressed(...)`：
-
+流程：
 1. 取 code；
-2. 停止 SMS/Call 监听；
-3. 发送 `TL_auth_signIn`，核心参数：
-   - `phone_number`
-   - `phone_code`
-   - `phone_code_hash`（上一步发码返回）
+2. 解除监听（SMS/Call）；
+3. 发 `TL_auth_signIn(phone_number, phone_code, phone_code_hash)`；
+4. 成功：`onAuthSuccess(...)` 或进入注册；
+5. `SESSION_PASSWORD_NEEDED`：拉取密码参数并进二步验证页。
 
-成功分支：
-- 已注册用户：`onAuthSuccess(...)`；
-- 未注册：进入 `VIEW_REGISTER`；
-- 需要二步验证：请求 `account.getPassword`，进入 `VIEW_PASSWORD`。
+对应代码：
+- 方法体：
+  - [LoginActivity.java#L4682-L4990](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4682-L4990)
+- `TL_auth_signIn`：
+  - [LoginActivity.java#L4867-L4872](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4867-L4872)
+- 成功分支：
+  - [LoginActivity.java#L4884-L4903](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4884-L4903)
+- 二步验证分支：
+  - [LoginActivity.java#L4906-L4927](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4906-L4927)
 
-关键位置：
-- `LoginActivity.java:4867-4872`（`TL_auth_signIn`）
-- `LoginActivity.java:4884-4903`（成功）
-- `LoginActivity.java:4906-4927`（二步验证）
-
-## 7. 重发验证码与降级策略
+## 7. 重发与降级
 
 ### 7.1 倒计时后重发
 
-- 倒计时结束后，点击 `timeText` 或内部逻辑会触发 `TL_auth_resendCode`。
-- 返回新的 `auth_sentCode` 后再次走 `fillNextCodeParams(...)`，可能切换验证码类型（例如 SMS → Call，或词语码分支）。
+- `timeText` 点击触发 `TL_auth_resendCode`。
+- 对应代码：
+  - [LoginActivity.java#L3800-L3839](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L3800-L3839)
 
-关键位置：
-- `LoginActivity.java:3811-3839`
-- `LoginActivity.java:4155-4186`
+### 7.2 主动重发方法
 
-### 7.2 Firebase SMS + 完整性校验链路
+- 方法：`resendCode()`
+- 对应代码：
+  - [LoginActivity.java#L4155-L4206](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4155-L4206)
 
-对于 `TL_auth_sentCodeTypeFirebaseSms`：
-- 先走 Play Integrity/SafetyNet 获取 token；
-- 调用 `auth.requestFirebaseSms`；
-- 若失败则回退 `auth.resendCode`。
+### 7.3 Firebase SMS + Integrity/SafetyNet 回退
 
-关键位置：
-- `LoginActivity.java:1765-1877`
-- `LoginActivity.java:1692-1727`
+- 入口与完整逻辑：
+  - [LoginActivity.java#L1765-L1877](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L1765-L1877)
+- 回退重发：
+  - [LoginActivity.java#L1692-L1727](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L1692-L1727)
 
-## 8. 失败与取消
+## 8. 错误处理与取消
 
-- 常见错误处理：
-  - `PHONE_CODE_INVALID/EMPTY`：提示错误并清空重输；
-  - `PHONE_CODE_EXPIRED`：回到手机号输入页；
-  - `FLOOD_WAIT`：频率限制提示。
-- 返回编辑手机号时会调用 `TL_auth_cancelCode` 取消当前验证码会话。
+- 验码错误（无效/过期/限流）分支：
+  - [LoginActivity.java#L4954-L4967](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L4954-L4967)
+- 返回编辑号码时取消验证码会话（`TL_auth_cancelCode`）：
+  - [LoginActivity.java#L5072-L5077](./TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java#L5072-L5077)
 
-关键位置：
-- `LoginActivity.java:4954-4967`（验码错误处理）
-- `LoginActivity.java:5072-5077`（`TL_auth_cancelCode`）
+## 9. 一句话主链路
 
-## 9. 总结（验证码主链路）
-
-主链路可以概括为：
-
-1. `auth.sendCode` 获取 `phone_code_hash` 与验证码类型；
-2. 进入对应验证码页并开始等待 SMS/Call 事件；
-3. 自动读取或手动输入验证码；
-4. `auth.signIn(phone, code, phone_code_hash)` 完成登录；
-5. 失败时按 `next_type` 与倒计时逻辑重发/降级到其他验证方式。
-
+`auth.sendCode` → `fillNextCodeParams` 路由验证码页 → 自动/手动输入验证码 → `auth.signIn` → 成功登录或进入注册/二步验证；失败则按 `next_type` 和倒计时重发、降级到其他验证方式。
