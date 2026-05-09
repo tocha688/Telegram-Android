@@ -1,0 +1,23 @@
+{
+  "name": "telegram-android-node-test",
+  "version": "1.0.0",
+  "description": "TypeScript @mtcute/node example for Android-like Telegram login",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/login.js"
+  },
+  "keywords": [
+    "telegram",
+    "mtcute",
+    "typescript"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@mtcute/node": "^0.29.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "typescript": "^6.0.3"
+  }
+}
