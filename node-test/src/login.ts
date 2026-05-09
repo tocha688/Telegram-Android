@@ -101,7 +101,10 @@ function buildInitConnectionOptions() {
 
   const perfCat = env('PERF_CAT');
   if (perfCat) {
-    params.perf_cat = envNumber('PERF_CAT', 2);
+    params.perf_cat = Number(perfCat);
+    if (Number.isNaN(params.perf_cat)) {
+      throw new Error('PERF_CAT must be a number');
+    }
   }
 
   return {
